@@ -202,6 +202,6 @@ int main(int argc, char** argv)
     outputVideo.release();
     subfile.close();
 
-    std::cout << "\nVideo saved as " << filename << std::endl;
+    std::cout << "Video saved as " << filename << std::endl;
     std::cout << "\nSubs saved as " << subfilename << std::endl;
 }
