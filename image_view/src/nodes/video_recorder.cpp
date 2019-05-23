@@ -102,13 +102,14 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg)
       if (!image.empty()) {
         image_mutex.lock();
         last_image = image;
-        last_time = first_time - image_msg->header.stamp;
+        std::cout << image_msg->header.stamp << std::endl;
+        last_time = image_msg->header.stamp - first_time;
         image_mutex.unlock();
         ROS_INFO_STREAM("Recording frame " << g_count << "\x1b[1F");
         g_count++;
         g_last_wrote_time = image_msg->header.stamp;
       } else {
-          ROS_WARN("Frame skipped, no data!");
+        ROS_WARN("Frame skipped, no data!");
       }
     } catch(cv_bridge::Exception)
     {
@@ -178,13 +179,15 @@ int main(int argc, char** argv)
 
     int n_frame = 0;
     while (ros::ok()) {
+//        ROS_INFO("cicle");
         if (!last_image.empty()) {
             image_mutex.lock();
             // save frame
             outputVideo << last_image;
-            // TODO save timestamp in srt
+
+            // save timestamp in subtitles
             std::string time_str = duration_to_strformat(last_time);
-            std::cout << time_str << std::endl;
+            //std::cout << time_str << std::endl;
 
             subfile << n_frame++ << "\n";
             subfile << time_str << " --> " << time_str << "\n";
@@ -192,13 +195,13 @@ int main(int argc, char** argv)
 
             image_mutex.unlock();
         }
-
+        ros::spinOnce();
         r.sleep();
     }
 
     outputVideo.release();
     subfile.close();
-    // ros::spin();
+
     std::cout << "\nVideo saved as " << filename << std::endl;
     std::cout << "\nSubs saved as " << subfilename << std::endl;
 }
