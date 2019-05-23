@@ -46,7 +46,8 @@ bool do_timestamp_srt;
 std::mutex image_mutex;
 cv::Mat last_image;
 ros::Time first_time;
-ros::Duration last_time;
+ros::Time last_time;
+ros::Duration last_duration;
 std::ofstream subfile;
 std::string subfilename;
 
@@ -76,7 +77,8 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg)
         }
 
         ROS_INFO_STREAM("Starting to record " << codec << " video at " << size << "@" << fps << "fps. Press Ctrl+C to stop recording." );
-        first_time = image_msg->header.stamp;
+        if (do_timestamp_srt)
+            first_time = image_msg->header.stamp;
     }
 
     // if ((image_msg->header.stamp - g_last_wrote_time) < ros::Duration(1.0 / fps))
@@ -104,8 +106,11 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg)
       if (!image.empty()) {
         image_mutex.lock();
         last_image = image;
-        std::cout << image_msg->header.stamp << std::endl;
-        last_time = image_msg->header.stamp - first_time;
+        if (do_timestamp_srt) {
+            //std::cout << image_msg->header.stamp << std::endl;
+            last_time = image_msg->header.stamp;
+            last_duration = last_time - first_time;
+        }
         image_mutex.unlock();
         ROS_INFO_STREAM("Recording frame " << g_count << "\x1b[1F");
         g_count++;
@@ -131,7 +136,8 @@ std::string duration_to_strformat(const ros::Duration duration)
     hours = ((hours.length() == 1) ? "0"+hours : hours);
     minutes = std::to_string(int(t_minutes % 60));
     minutes = ((minutes.length() == 1) ? "0"+minutes : minutes);
-    mseconds = std::to_string(duration.nsec).substr(0, 3);
+    std::string tosec = std::to_string(duration.toSec());
+    mseconds = tosec.substr(tosec.find_last_of(".") + 1, 3);
     return hours + ":" + minutes + ":" + seconds + "," + mseconds;
 }
 int main(int argc, char** argv)
@@ -190,10 +196,10 @@ int main(int argc, char** argv)
 
             if (do_timestamp_srt) {
                 // save timestamp in subtitles
-                std::string time_str = duration_to_strformat(last_time);
+                std::string time_str = duration_to_strformat(last_duration);
                 subfile << n_frame++ << "\n";
                 subfile << time_str << " --> " << time_str << "\n";
-                subfile << time_str << "\n\n";
+                subfile << last_time << "\n\n";
             }
             image_mutex.unlock();
         }
