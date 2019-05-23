@@ -42,11 +42,13 @@ double min_depth_range;
 double max_depth_range;
 bool use_dynamic_range;
 int colormap;
+bool do_timestamp_srt;
 std::mutex image_mutex;
 cv::Mat last_image;
 ros::Time first_time;
 ros::Duration last_time;
-
+std::ofstream subfile;
+std::string subfilename;
 
 void callback(const sensor_msgs::ImageConstPtr& image_msg)
 {
@@ -148,6 +150,7 @@ int main(int argc, char** argv)
     local_nh.param("max_depth_range", max_depth_range, 0.0);
     local_nh.param("use_dynamic_depth_range", use_dynamic_range, false);
     local_nh.param("colormap", colormap, -1);
+    local_nh.param("do_timestamp_srt", do_timestamp_srt, false);
 
     if (stamped_filename) {
       std::size_t found = filename.find_last_of("/\\");
@@ -170,29 +173,28 @@ int main(int argc, char** argv)
 
     ROS_INFO_STREAM("Waiting for topic " << topic << "...");
 
-    std::ofstream subfile;
-    std::size_t found_d= filename.find_last_of(".");
-    std::string subfilename = filename.substr(0, found_d) + ".srt";
-    subfile.open (subfilename);
+    if (do_timestamp_srt) {
+        std::size_t found_d= filename.find_last_of(".");
+        subfilename = filename.substr(0, found_d) + ".srt";
+        subfile.open (subfilename);
+    }
 
     ros::Rate r(fps);
 
     int n_frame = 0;
     while (ros::ok()) {
-//        ROS_INFO("cicle");
         if (!last_image.empty()) {
             image_mutex.lock();
             // save frame
             outputVideo << last_image;
 
-            // save timestamp in subtitles
-            std::string time_str = duration_to_strformat(last_time);
-            //std::cout << time_str << std::endl;
-
-            subfile << n_frame++ << "\n";
-            subfile << time_str << " --> " << time_str << "\n";
-            subfile << time_str << "\n\n";
-
+            if (do_timestamp_srt) {
+                // save timestamp in subtitles
+                std::string time_str = duration_to_strformat(last_time);
+                subfile << n_frame++ << "\n";
+                subfile << time_str << " --> " << time_str << "\n";
+                subfile << time_str << "\n\n";
+            }
             image_mutex.unlock();
         }
         ros::spinOnce();
@@ -200,8 +202,10 @@ int main(int argc, char** argv)
     }
 
     outputVideo.release();
-    subfile.close();
+    std::cout << "\nVideo saved as " << filename << std::endl;
 
-    std::cout << "Video saved as " << filename << std::endl;
-    std::cout << "\nSubs saved as " << subfilename << std::endl;
+    if (do_timestamp_srt) {
+        subfile.close();
+        std::cout << "Subs saved as " << subfilename << std::endl;
+    }
 }
