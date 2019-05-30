@@ -182,7 +182,7 @@ int main(int argc, char** argv)
     image_transport::Subscriber sub_image = it.subscribe(topic, 1, callback);
 
     // use async spinner
-    ros::AsyncSpinner spinner(0);
+    ros::AsyncSpinner spinner(1);
 
     if (do_timestamp_srt) {
         std::size_t found_d= filename.find_last_of(".");
@@ -195,15 +195,16 @@ int main(int argc, char** argv)
     spinner.start();
 
     std::chrono::milliseconds max_wait_ms(int(std::floor(1000.0 / fps)));
+    int n_frame = 0;
+   // std::chrono::milliseconds elapsed_ms;
+   // std::chrono::milliseconds ms_left;
 
     // waiting to receive the first image
     while (ros::ok() && last_image.empty())
        std::this_thread::sleep_for(max_wait_ms);
 
-    int n_frame = 0;
-    std::chrono::system_clock::time_point start_time = std::chrono::system_clock::now();
-    std::chrono::milliseconds elapsed_ms;
-    std::chrono::milliseconds ms_left;
+    auto start_time = std::chrono::steady_clock::now();
+    auto lock_until_time = start_time + max_wait_ms;
 
     // take the first image
 //    image_mutex.lock();
@@ -214,22 +215,24 @@ int main(int argc, char** argv)
 
     while (ros::ok()) {
         // time left for staying in the framerate
-        elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start_time);
-        ms_left = max_wait_ms - elapsed_ms;
+        //elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+        //ms_left = max_wait_ms - elapsed_ms;
 
         // continue take the last possible image 
-        do {
-             if (image_mutex.try_lock_for(ms_left)) {
+       while (lock_until_time > std::chrono::steady_clock::now()) {
+//             std::cout << "  waiting for " << ms_left.count() << ", elapsed " << elapsed_ms.count() << std::endl;
+             if (image_mutex.try_lock_until(lock_until_time)) {
                  last_saved_image = last_image.clone();
                  last_saved_time = last_time;
                  image_mutex.unlock();
              }
-             elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start_time);
-             ms_left = max_wait_ms - elapsed_ms;
-        } while (ms_left > std::chrono::milliseconds(0));
+             //elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+             //ms_left = max_wait_ms - elapsed_ms;
+        }
 
-        start_time = std::chrono::system_clock::now();
-
+        start_time = std::chrono::steady_clock::now();
+        lock_until_time = start_time + max_wait_ms;
+//        std::cout << "      start" << std::endl;
         // save timestamp in subtitles
         if (do_timestamp_srt) {
            if (first_time.isZero())
@@ -237,7 +240,7 @@ int main(int argc, char** argv)
 
            std::string time_str = duration_to_strformat(ros::Time::now() - first_time);
            subfile << n_frame++ << "\n";
-           subfile << time_str << " --> " << time_str << "\n";
+           subfile << time_str << " --> " << time_str << " " << elapsed_ms.count() << " " << ms_left.count() <<"\n";
            subfile << last_saved_time << "\n\n";
         }
         // save frame
