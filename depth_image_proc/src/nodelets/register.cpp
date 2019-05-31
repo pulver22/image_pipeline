@@ -1,13 +1,13 @@
 /*********************************************************************
 * Software License Agreement (BSD License)
-* 
+*
 *  Copyright (c) 2008, Willow Garage, Inc.
 *  All rights reserved.
-* 
+*
 *  Redistribution and use in source and binary forms, with or without
 *  modification, are permitted provided that the following conditions
 *  are met:
-* 
+*
 *   * Redistributions of source code must retain the above copyright
 *     notice, this list of conditions and the following disclaimer.
 *   * Redistributions in binary form must reproduce the above
@@ -17,7 +17,7 @@
 *   * Neither the name of the Willow Garage nor the names of its
 *     contributors may be used to endorse or promote products derived
 *     from this software without specific prior written permission.
-* 
+*
 *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
@@ -55,7 +55,7 @@ class RegisterNodelet : public nodelet::Nodelet
 {
   ros::NodeHandlePtr nh_depth_, nh_rgb_;
   boost::shared_ptr<image_transport::ImageTransport> it_depth_;
-  
+
   // Subscriptions
   image_transport::SubscriberFilter sub_depth_image_;
   message_filters::Subscriber<sensor_msgs::CameraInfo> sub_depth_info_, sub_rgb_info_;
@@ -70,6 +70,9 @@ class RegisterNodelet : public nodelet::Nodelet
   image_transport::CameraPublisher pub_registered_;
 
   image_geometry::PinholeCameraModel depth_model_, rgb_model_;
+bool use_rgb_timestamp_;
+  // Parameters
+  bool fill_upsampling_holes_;	// fills holes which occur due to upsampling by scaling each pixel to the target image scale (only takes effect on upsampling)
 
   virtual void onInit();
 
@@ -98,6 +101,8 @@ void RegisterNodelet::onInit()
   // Read parameters
   int queue_size;
   private_nh.param("queue_size", queue_size, 5);
+  private_nh.param("use_rgb_timestamp", use_rgb_timestamp_, false);
+  private_nh.param("fill_upsampling_holes", fill_upsampling_holes_, false);
 
   // Synchronize inputs. Topic subscriptions happen on demand in the connection callback.
   sync_.reset( new Synchronizer(SyncPolicy(queue_size), sub_depth_image_, sub_depth_info_, sub_rgb_info_) );
@@ -161,10 +166,11 @@ void RegisterNodelet::imageCb(const sensor_msgs::ImageConstPtr& depth_image_msg,
 
   // Allocate registered depth image
   sensor_msgs::ImagePtr registered_msg( new sensor_msgs::Image );
-  registered_msg->header.stamp    = depth_image_msg->header.stamp;
+  //registered_msg->header.stamp    = depth_image_msg->header.stamp;
+  registered_msg->header.stamp    = use_rgb_timestamp_ ? rgb_info_msg->header.stamp : depth_image_msg->header.stamp;
   registered_msg->header.frame_id = rgb_info_msg->header.frame_id;
   registered_msg->encoding        = depth_image_msg->encoding;
-  
+
   cv::Size resolution = rgb_model_.reducedResolution();
   registered_msg->height = resolution.height;
   registered_msg->width  = resolution.width;
@@ -210,9 +216,9 @@ void RegisterNodelet::convert(const sensor_msgs::ImageConstPtr& depth_msg,
   double rgb_fx = rgb_model_.fx(), rgb_fy = rgb_model_.fy();
   double rgb_cx = rgb_model_.cx(), rgb_cy = rgb_model_.cy();
   double rgb_Tx = rgb_model_.Tx(), rgb_Ty = rgb_model_.Ty();
-  
+
   // Transform the depth values into the RGB frame
-  /// @todo When RGB is higher res, interpolate by rasterizing depth triangles onto the registered image  
+  /// @todo When RGB is higher res, interpolate by rasterizing depth triangles onto the registered image
   const T* depth_row = reinterpret_cast<const T*>(&depth_msg->data[0]);
   int row_step = depth_msg->step / sizeof(T);
   T* registered_data = reinterpret_cast<T*>(&registered_msg->data[0]);
@@ -224,34 +230,78 @@ void RegisterNodelet::convert(const sensor_msgs::ImageConstPtr& depth_msg,
       T raw_depth = depth_row[u];
       if (!DepthTraits<T>::valid(raw_depth))
         continue;
-      
+
       double depth = DepthTraits<T>::toMeters(raw_depth);
 
-      /// @todo Combine all operations into one matrix multiply on (u,v,d)
-      // Reproject (u,v,Z) to (X,Y,Z,1) in depth camera frame
-      Eigen::Vector4d xyz_depth;
-      xyz_depth << ((u - depth_cx)*depth - depth_Tx) * inv_depth_fx,
-                   ((v - depth_cy)*depth - depth_Ty) * inv_depth_fy,
-                   depth,
-                   1;
+      if (fill_upsampling_holes_ == false)
+      {
+        /// @todo Combine all operations into one matrix multiply on (u,v,d)
+        // Reproject (u,v,Z) to (X,Y,Z,1) in depth camera frame
+        Eigen::Vector4d xyz_depth;
+        xyz_depth << ((u - depth_cx)*depth - depth_Tx) * inv_depth_fx,
+                     ((v - depth_cy)*depth - depth_Ty) * inv_depth_fy,
+                     depth,
+                     1;
 
-      // Transform to RGB camera frame
-      Eigen::Vector4d xyz_rgb = depth_to_rgb * xyz_depth;
+        // Transform to RGB camera frame
+        Eigen::Vector4d xyz_rgb = depth_to_rgb * xyz_depth;
 
-      // Project to (u,v) in RGB image
-      double inv_Z = 1.0 / xyz_rgb.z();
-      int u_rgb = (rgb_fx*xyz_rgb.x() + rgb_Tx)*inv_Z + rgb_cx + 0.5;
-      int v_rgb = (rgb_fy*xyz_rgb.y() + rgb_Ty)*inv_Z + rgb_cy + 0.5;
-      
-      if (u_rgb < 0 || u_rgb >= (int)registered_msg->width ||
-          v_rgb < 0 || v_rgb >= (int)registered_msg->height)
-        continue;
-      
-      T& reg_depth = registered_data[v_rgb*registered_msg->width + u_rgb];
-      T  new_depth = DepthTraits<T>::fromMeters(xyz_rgb.z());
-      // Validity and Z-buffer checks
-      if (!DepthTraits<T>::valid(reg_depth) || reg_depth > new_depth)
-        reg_depth = new_depth;
+        // Project to (u,v) in RGB image
+        double inv_Z = 1.0 / xyz_rgb.z();
+        int u_rgb = (rgb_fx*xyz_rgb.x() + rgb_Tx)*inv_Z + rgb_cx + 0.5;
+        int v_rgb = (rgb_fy*xyz_rgb.y() + rgb_Ty)*inv_Z + rgb_cy + 0.5;
+
+        if (u_rgb < 0 || u_rgb >= (int)registered_msg->width ||
+            v_rgb < 0 || v_rgb >= (int)registered_msg->height)
+          continue;
+
+        T& reg_depth = registered_data[v_rgb*registered_msg->width + u_rgb];
+        T  new_depth = DepthTraits<T>::fromMeters(xyz_rgb.z());
+        // Validity and Z-buffer checks
+        if (!DepthTraits<T>::valid(reg_depth) || reg_depth > new_depth)
+          reg_depth = new_depth;
+      }
+      else
+      {
+        // Reproject (u,v,Z) to (X,Y,Z,1) in depth camera frame
+        Eigen::Vector4d xyz_depth_1, xyz_depth_2;
+        xyz_depth_1 << ((u-0.5f - depth_cx)*depth - depth_Tx) * inv_depth_fx,
+                       ((v-0.5f - depth_cy)*depth - depth_Ty) * inv_depth_fy,
+                       depth,
+                       1;
+        xyz_depth_2 << ((u+0.5f - depth_cx)*depth - depth_Tx) * inv_depth_fx,
+                       ((v+0.5f - depth_cy)*depth - depth_Ty) * inv_depth_fy,
+                       depth,
+                       1;
+
+        // Transform to RGB camera frame
+        Eigen::Vector4d xyz_rgb_1 = depth_to_rgb * xyz_depth_1;
+        Eigen::Vector4d xyz_rgb_2 = depth_to_rgb * xyz_depth_2;
+
+        // Project to (u,v) in RGB image
+        double inv_Z = 1.0 / xyz_rgb_1.z();
+        int u_rgb_1 = (rgb_fx*xyz_rgb_1.x() + rgb_Tx)*inv_Z + rgb_cx + 0.5;
+        int v_rgb_1 = (rgb_fy*xyz_rgb_1.y() + rgb_Ty)*inv_Z + rgb_cy + 0.5;
+        inv_Z = 1.0 / xyz_rgb_2.z();
+        int u_rgb_2 = (rgb_fx*xyz_rgb_2.x() + rgb_Tx)*inv_Z + rgb_cx + 0.5;
+        int v_rgb_2 = (rgb_fy*xyz_rgb_2.y() + rgb_Ty)*inv_Z + rgb_cy + 0.5;
+
+        if (u_rgb_1 < 0 || u_rgb_2 >= (int)registered_msg->width ||
+            v_rgb_1 < 0 || v_rgb_2 >= (int)registered_msg->height)
+          continue;
+
+        for (int nv=v_rgb_1; nv<=v_rgb_2; ++nv)
+        {
+          for (int nu=u_rgb_1; nu<=u_rgb_2; ++nu)
+          {
+            T& reg_depth = registered_data[nv*registered_msg->width + nu];
+            T  new_depth = DepthTraits<T>::fromMeters(0.5*(xyz_rgb_1.z()+xyz_rgb_2.z()));
+            // Validity and Z-buffer checks
+            if (!DepthTraits<T>::valid(reg_depth) || reg_depth > new_depth)
+              reg_depth = new_depth;
+          }
+        }
+      }
     }
   }
 }
