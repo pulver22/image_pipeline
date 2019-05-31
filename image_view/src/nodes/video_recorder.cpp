@@ -24,9 +24,6 @@
 #include <image_transport/image_transport.h>
 #include <camera_calibration_parsers/parse.h>
 #include <mutex>
-#include <chrono>
-#include <thread>
-#include <cmath>
 #include <iostream>
 #include <fstream>
 #if CV_MAJOR_VERSION == 3
@@ -46,12 +43,11 @@ double max_depth_range;
 bool use_dynamic_range;
 int colormap;
 bool do_timestamp_srt;
-std::timed_mutex image_mutex;
+std::mutex image_mutex;
 cv::Mat last_image;
-cv::Mat last_saved_image;
 ros::Time first_time;
 ros::Time last_time;
-ros::Time last_saved_time;
+ros::Duration last_duration;
 std::ofstream subfile;
 std::string subfilename;
 
@@ -81,8 +77,8 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg)
         }
 
         ROS_INFO_STREAM("Starting to record " << codec << " video at " << size << "@" << fps << "fps. Press Ctrl+C to stop recording." );
-//        if (do_timestamp_srt)
-//            first_time = image_msg->header.stamp;
+        if (do_timestamp_srt)
+            first_time = image_msg->header.stamp;
     }
 
     // if ((image_msg->header.stamp - g_last_wrote_time) < ros::Duration(1.0 / fps))
@@ -113,7 +109,7 @@ void callback(const sensor_msgs::ImageConstPtr& image_msg)
         if (do_timestamp_srt) {
             //std::cout << image_msg->header.stamp << std::endl;
             last_time = image_msg->header.stamp;
-            //last_duration = last_time - first_time;
+            last_duration = last_time - first_time;
         }
         image_mutex.unlock();
         ROS_INFO_STREAM("Recording frame " << g_count << "\x1b[1F");
@@ -181,8 +177,7 @@ int main(int argc, char** argv)
     std::string topic = nh.resolveName("image");
     image_transport::Subscriber sub_image = it.subscribe(topic, 1, callback);
 
-    // use async spinner
-    ros::AsyncSpinner spinner(1);
+    ROS_INFO_STREAM("Waiting for topic " << topic << "...");
 
     if (do_timestamp_srt) {
         std::size_t found_d= filename.find_last_of(".");
@@ -190,64 +185,27 @@ int main(int argc, char** argv)
         subfile.open (subfilename);
     }
 
-    ROS_INFO_STREAM("Waiting for topic " << topic << "...");
+    ros::Rate r(fps);
 
-    spinner.start();
-
-    std::chrono::milliseconds max_wait_ms(int(std::floor(1000.0 / fps)));
     int n_frame = 0;
-   // std::chrono::milliseconds elapsed_ms;
-   // std::chrono::milliseconds ms_left;
-
-    // waiting to receive the first image
-    while (ros::ok() && last_image.empty())
-       std::this_thread::sleep_for(max_wait_ms);
-
-    auto start_time = std::chrono::steady_clock::now();
-    auto lock_until_time = start_time + max_wait_ms;
-
-    // take the first image
-//    image_mutex.lock();
-//   last_saved_image = last_image.clone();
-//    last_saved_duration = last_duration;
-//    last_saved_time = last_time;
-//    image_mutex.unlock();
-
     while (ros::ok()) {
-        // time left for staying in the framerate
-        //elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
-        //ms_left = max_wait_ms - elapsed_ms;
+        if (!last_image.empty()) {
+            image_mutex.lock();
+            // save frame
+            outputVideo << last_image;
 
-        // continue take the last possible image 
-       while (lock_until_time > std::chrono::steady_clock::now()) {
-//             std::cout << "  waiting for " << ms_left.count() << ", elapsed " << elapsed_ms.count() << std::endl;
-             if (image_mutex.try_lock_until(lock_until_time)) {
-                 last_saved_image = last_image.clone();
-                 last_saved_time = last_time;
-                 image_mutex.unlock();
-             }
-             //elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
-             //ms_left = max_wait_ms - elapsed_ms;
+            if (do_timestamp_srt) {
+                // save timestamp in subtitles
+                std::string time_str = duration_to_strformat(last_duration);
+                subfile << n_frame++ << "\n";
+                subfile << time_str << " --> " << time_str << "\n";
+                subfile << last_time << "\n\n";
+            }
+            image_mutex.unlock();
         }
-
-        start_time = std::chrono::steady_clock::now();
-        lock_until_time = start_time + max_wait_ms;
-//        std::cout << "      start" << std::endl;
-        // save timestamp in subtitles
-        if (do_timestamp_srt) {
-           if (first_time.isZero())
-               first_time = ros::Time::now();
-
-           std::string time_str = duration_to_strformat(ros::Time::now() - first_time);
-           subfile << n_frame++ << "\n";
-           subfile << time_str << " --> " << time_str << " " << elapsed_ms.count() << " " << ms_left.count() <<"\n";
-           subfile << last_saved_time << "\n\n";
-        }
-        // save frame
-        outputVideo << last_saved_image;
+        ros::spinOnce();
+        r.sleep();
     }
-
-    spinner.stop();
 
     outputVideo.release();
     std::cout << "\nVideo saved as " << filename << std::endl;
@@ -256,6 +214,4 @@ int main(int argc, char** argv)
         subfile.close();
         std::cout << "Subs saved as " << subfilename << std::endl;
     }
-
-    return 0;
 }
